@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Generador de Reportes Calidad v1.22</title>
+    <title>Generador de Reportes Calidad v1.23</title>
     <meta name="theme-color" content="#003DA5">
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icon-192.png">
@@ -632,6 +632,15 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         td.machine-label.maq-completa { background: #d1f2dc; }
         td.machine-label.maq-parcial { background: #fff3cd; }
         td.machine-label.maq-falta { background: #f8d7da; }
+        /* Aviso breve (turno actualizado, nueva versión) */
+        #aviso {
+            display: none; position: sticky; top: 44px; z-index: 49; margin: -6px -5px 10px;
+            padding: 9px 12px; background: #fff3cd; color: #5c4400; border-bottom: 1px solid #f0d78a;
+            font-size: 13px; line-height: 1.35;
+        }
+        #aviso.visible { display: block; }
+        #aviso button { float: right; border: none; background: none; font-size: 16px; color: #5c4400; cursor: pointer; padding: 0 0 0 10px; }
+        .version-app { font-weight: bold; color: #667; }
         /* Fotos extra por máquina */
         .fila-extras > td { background: #fafafa; }
         td.extras-label { font-size: 10px; color: #555; font-weight: bold; }
@@ -671,10 +680,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     <div id="modal-instrucciones" class="modal">
         <div class="modal-content">
             <span class="close-btn" onclick="cerrarInstrucciones()">&times;</span>
-            <h3>📖 Instrucciones de Uso</h3>
+            <h3>📖 Instrucciones de Uso <span class="version-app" id="version-modal"></span></h3>
             <ol>
                 <li><strong>Abrir siempre igual:</strong> use siempre el mismo enlace (o el ícono instalado en la pantalla de inicio) y el mismo navegador. Si se abre desde otra ruta, no verá las fotos guardadas.</li>
-                <li><strong>Completar Datos:</strong> Fecha, Turno, Analista y la OP de cada núcleo con fotos son obligatorios. El vencimiento se calcula solo (180 días).</li>
+                <li><strong>Completar Datos:</strong> al abrir la app se proponen la fecha y el turno según la hora (el Turno 2 después de medianoche conserva la fecha en que empezó); puede cambiarlos si corresponde. Fecha, Turno, Analista y la OP de cada núcleo con fotos son obligatorios. El vencimiento se calcula solo (180 días).</li>
                 <li><strong>Tomar Fotos:</strong> toque un recuadro para abrir la cámara. Cada foto lleva impresa la máquina, fecha y hora. Para borrar una foto use la <strong>✕</strong> roja. Con <strong>+ Foto extra</strong> puede agregar más fotos a una máquina, además de sus 3 muestras.</li>
                 <li><strong>Avance:</strong> la barra superior muestra cuántas fotos lleva. Verde = máquina completa, amarillo = incompleta, rojo = falta en un núcleo en uso.</li>
                 <li><strong>Nube:</strong> al generar el PDF se descarga y se envía a Google Drive. Si no hay señal, queda en cola (☁️ pendiente) y se envía solo al volver internet. Toque el indicador ☁️ para reintentar.</li>
@@ -689,6 +698,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         <div class="progreso-pista"><div id="progreso-relleno"></div></div>
         <button type="button" id="badge-nube" onclick="reintentarNube()">☁️ Al día</button>
     </div>
+
+    <div id="aviso" role="status"><button type="button" aria-label="Cerrar aviso" onclick="ocultarAviso()">✕</button><span id="aviso-texto"></span></div>
 
     <div class="report-container" id="report-content">
         
@@ -861,12 +872,13 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     </div>
 
     <div class="footer-firma">
-        Herramienta Desarrollada por Alejandro Jordán y Rafael Torres Octubre 2026
+        Herramienta Desarrollada por Alejandro Jordán y Rafael Torres Octubre 2026<br>
+        <span class="version-app" id="version-pie"></span>
     </div>
 
     <script>
         /* ===================== CONFIGURACIÓN ===================== */
-        const APP_VERSION = '1.22';
+        const APP_VERSION = '1.23';
         // Máximo de fotos extra por máquina (mantiene el PDF legible)
         const MAX_EXTRAS = 12;
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzBPkXjv1hfsAD4f5q7wy-eplIBW9tm1jSbn5KAfeds1Jflo8AVI7H0QyTh6lFejTGi/exec";
@@ -917,12 +929,20 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
             }
             await cargarFotosGuardadas();
             actualizarProgreso();
-            await revisarTurnoAnterior();
+            mostrarVersion();
+            const estadoFotos = await revisarTurnoAnterior();
+            // Si conservó fotos de un turno anterior, no se cambia la fecha/turno de ese reporte
+            if (estadoFotos !== 'conservado') aplicarTurnoActual();
 
             actualizarIndicadorNube();
             enviarPendientes();
             window.addEventListener('online', () => enviarPendientes());
-            document.addEventListener('visibilitychange', () => { if (!document.hidden) enviarPendientes(); });
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) return;
+                enviarPendientes();
+                // Turno nuevo con la app abierta en segundo plano: solo si no hay fotos pendientes de otro turno
+                if (!Object.keys(fotosMeta).length) aplicarTurnoActual();
+            });
             setInterval(() => enviarPendientes(), 60000);
 
             registrarServiceWorker();
@@ -1128,16 +1148,69 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         /* ===================== AVISO DE TURNO ANTERIOR ===================== */
         async function revisarTurnoAnterior() {
             const tiempos = Object.values(fotosMeta).filter(Boolean);
-            if (!tiempos.length) return;
+            if (!tiempos.length) return 'sin';
             const masAntigua = Math.min(...tiempos);
-            if (Date.now() - masAntigua < HORAS_TURNO * 3600 * 1000) return;
+            if (Date.now() - masAntigua < HORAS_TURNO * 3600 * 1000) return 'actual';
             const cuando = new Date(masAntigua).toLocaleString('es', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
             const pendientes = (await pendListar().catch(() => [])).length;
             let msg = `Hay ${tiempos.length} foto(s) de un turno anterior (desde el ${cuando}).\n\n` +
                       '¿Deseas borrarlas para empezar el turno nuevo?\n\n' +
                       'Si aún NO generaste el reporte de ese turno, pulsa Cancelar.';
             if (pendientes) msg += `\n\n(Hay ${pendientes} reporte(s) en cola para la nube; esos NO se borran.)`;
-            if (confirm(msg)) limpiarTurno(true);
+            if (confirm(msg)) { limpiarTurno(true); return 'limpiado'; }
+            return 'conservado';
+        }
+
+        /* ===================== FECHA Y TURNO AUTOMÁTICOS =====================
+           06:00-17:59 -> Turno 1, fecha de hoy
+           18:00-23:59 -> Turno 2, fecha de hoy
+           00:00-05:59 -> Turno 2, fecha de AYER (fecha en que empezó el turno) */
+        function turnoActual(ahora = new Date()) {
+            const h = ahora.getHours();
+            const d = new Date(ahora);
+            if (h < 6) d.setDate(d.getDate() - 1);
+            const fecha = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            const turnoSel = document.getElementById('turno-reporte');
+            const turno = turnoSel.options[(h >= 6 && h < 18) ? 1 : 2].value;
+            return { fecha, turno, clave: fecha + '|' + turno };
+        }
+
+        // Propone fecha y turno solo cuando empieza un turno nuevo; dentro del
+        // mismo turno respeta lo que el analista haya cambiado a mano.
+        function aplicarTurnoActual(forzarAviso) {
+            const t = turnoActual();
+            if (localStorage.getItem('haccp_turno_clave') === t.clave) return;
+            const fechaEl = document.getElementById('fecha-reporte');
+            const turnoEl = document.getElementById('turno-reporte');
+            const cambio = fechaEl.value !== t.fecha || turnoEl.value !== t.turno;
+            fechaEl.value = t.fecha;
+            turnoEl.value = t.turno;
+            fechaEl.classList.remove('campo-error'); turnoEl.classList.remove('campo-error');
+            localStorage.setItem('haccp_turno_clave', t.clave);
+            actualizarFechas();
+            if (cambio || forzarAviso) {
+                mostrarAviso(`Fecha y turno actualizados al turno actual: ${t.turno.replace(/ \(.*\)/, '')}, ${t.fecha.split('-').reverse().join('/')}. Puede cambiarlos si corresponde.`);
+            }
+        }
+
+        /* ===================== AVISOS Y VERSIÓN ===================== */
+        let avisoTimer = null;
+        function mostrarAviso(texto) {
+            const el = document.getElementById('aviso-texto');
+            const visible = document.getElementById('aviso').classList.contains('visible');
+            el.textContent = visible && el.textContent ? el.textContent + ' ' + texto : texto;
+            document.getElementById('aviso').classList.add('visible');
+            clearTimeout(avisoTimer);
+            avisoTimer = setTimeout(ocultarAviso, 10000);
+        }
+        function ocultarAviso() { document.getElementById('aviso').classList.remove('visible'); }
+
+        function mostrarVersion() {
+            document.getElementById('version-pie').textContent = 'Versión ' + APP_VERSION;
+            document.getElementById('version-modal').textContent = 'v' + APP_VERSION;
+            const vista = localStorage.getItem('haccp_version_vista');
+            if (vista && vista !== APP_VERSION) mostrarAviso(`✅ App actualizada a la versión ${APP_VERSION}.`);
+            localStorage.setItem('haccp_version_vista', APP_VERSION);
         }
 
         /* ===================== CAPTURA Y SELLO DE FOTOS ===================== */
