@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Generador de Reportes Calidad v1.21</title>
+    <title>Generador de Reportes Calidad v1.22</title>
     <meta name="theme-color" content="#003DA5">
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icon-192.png">
@@ -632,6 +632,17 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         td.machine-label.maq-completa { background: #d1f2dc; }
         td.machine-label.maq-parcial { background: #fff3cd; }
         td.machine-label.maq-falta { background: #f8d7da; }
+        /* Fotos extra por máquina */
+        .fila-extras > td { background: #fafafa; }
+        td.extras-label { font-size: 10px; color: #555; font-weight: bold; }
+        .extras-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
+        .extras-grid:empty { display: none; }
+        .btn-agregar-extra {
+            width: 100%; padding: 7px 4px; margin-top: 3px; box-sizing: border-box;
+            border: 1px dashed var(--polar-blue); border-radius: 4px; background: #eef3fb;
+            color: var(--polar-blue); font-size: 12px; font-weight: bold; cursor: pointer;
+        }
+        .export-sheet .btn-agregar-extra { display: none !important; }
         .campo-error { border: 2px solid #dc3545 !important; background: #fff5f5 !important; }
         @media (prefers-reduced-motion: reduce) { #progreso-relleno { transition: none; } }
         /* Área temporal de exportación: ancho estable, nunca se captura el body desplazado */
@@ -664,7 +675,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
             <ol>
                 <li><strong>Abrir siempre igual:</strong> use siempre el mismo enlace (o el ícono instalado en la pantalla de inicio) y el mismo navegador. Si se abre desde otra ruta, no verá las fotos guardadas.</li>
                 <li><strong>Completar Datos:</strong> Fecha, Turno, Analista y la OP de cada núcleo con fotos son obligatorios. El vencimiento se calcula solo (180 días).</li>
-                <li><strong>Tomar Fotos:</strong> toque un recuadro para abrir la cámara. Cada foto lleva impresa la máquina, fecha y hora. Para borrar una foto use la <strong>✕</strong> roja.</li>
+                <li><strong>Tomar Fotos:</strong> toque un recuadro para abrir la cámara. Cada foto lleva impresa la máquina, fecha y hora. Para borrar una foto use la <strong>✕</strong> roja. Con <strong>+ Foto extra</strong> puede agregar más fotos a una máquina, además de sus 3 muestras.</li>
                 <li><strong>Avance:</strong> la barra superior muestra cuántas fotos lleva. Verde = máquina completa, amarillo = incompleta, rojo = falta en un núcleo en uso.</li>
                 <li><strong>Nube:</strong> al generar el PDF se descarga y se envía a Google Drive. Si no hay señal, queda en cola (☁️ pendiente) y se envía solo al volver internet. Toque el indicador ☁️ para reintentar.</li>
                 <li><strong>Limpiar:</strong> al terminar el turno presione el botón rojo. Si abre la app con fotos de un turno anterior, se le preguntará si desea borrarlas.</li>
@@ -672,6 +683,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         </div>
     </div>
 
+    <input type="file" id="input-extra" accept="image/*" capture="environment" style="display:none">
     <div id="barra-progreso">
         <span id="progreso-texto">📷 0/30 fotos</span>
         <div class="progreso-pista"><div id="progreso-relleno"></div></div>
@@ -854,7 +866,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
     <script>
         /* ===================== CONFIGURACIÓN ===================== */
-        const APP_VERSION = '1.21';
+        const APP_VERSION = '1.22';
+        // Máximo de fotos extra por máquina (mantiene el PDF legible)
+        const MAX_EXTRAS = 12;
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzBPkXjv1hfsAD4f5q7wy-eplIBW9tm1jSbn5KAfeds1Jflo8AVI7H0QyTh6lFejTGi/exec";
         // Debe ser IDÉNTICO al TOKEN configurado en el Apps Script
         const API_TOKEN = "aGCDztYEwSLe08wfOsLFuaGnAJ0tYclj";
@@ -897,6 +911,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                     el.addEventListener(ev, () => { if (el.value) el.classList.remove('campo-error'); })));
 
             agregarBotonesBorrar();
+            prepararFotosExtra();
             if (navigator.storage && navigator.storage.persist) {
                 navigator.storage.persist().catch(() => {});
             }
@@ -1026,6 +1041,88 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                     console.error('No se pudo cargar la foto ' + imgId, e);
                 }
             }
+            // Fotos extra: se reconstruyen desde lo guardado, en orden de captura
+            try {
+                const claves = (await dbOp(ST_FOTOS, 'readonly', st => st.getAllKeys())).filter(esExtra);
+                const extras = [];
+                for (const k of claves) {
+                    const foto = normalizarFoto(await fotoLeer(k));
+                    if (foto) extras.push({ k, foto });
+                }
+                extras.sort((a, b) => (a.foto.ts || 0) - (b.foto.ts || 0));
+                extras.forEach(({ k, foto }) => {
+                    if (!crearCasillaExtra(maquinaDeExtra(k), k)) return;
+                    fotosMeta[k] = foto.ts;
+                    mostrarImagenSegura(k, foto.dataUrl);
+                });
+            } catch (e) {
+                console.error('No se pudieron cargar las fotos extra', e);
+            }
+        }
+
+        /* ===================== FOTOS EXTRA POR MÁQUINA ===================== */
+        const RE_EXTRA = /^img-(.+)-x[a-z0-9]+$/;
+        const esExtra = id => RE_EXTRA.test(String(id));
+        const maquinaDeExtra = id => String(id).match(RE_EXTRA)[1];
+        let maquinaExtraPendiente = null;
+
+        function prepararFotosExtra() {
+            document.querySelectorAll('#report-content tr').forEach(tr => {
+                const lbl = tr.querySelector('td.machine-label');
+                const img = tr.querySelector('.photo-box img');
+                if (!lbl || !img) return;
+                const maq = img.id.replace(/^img-/, '').replace(/-\d+$/, '');
+                const fila = document.createElement('tr');
+                fila.className = 'fila-extras';
+                fila.dataset.maq = maq;
+                fila.dataset.nombre = lbl.textContent.trim();
+                fila.innerHTML = '<td class="extras-label">Fotos extra</td>' +
+                    '<td colspan="3"><div class="extras-grid"></div>' +
+                    '<button type="button" class="btn-agregar-extra">+ Foto extra</button></td>';
+                fila.querySelector('.btn-agregar-extra').addEventListener('click', () => {
+                    if (fila.querySelectorAll('.extra-item').length >= MAX_EXTRAS) {
+                        alert(`Máximo ${MAX_EXTRAS} fotos extra por máquina.`);
+                        return;
+                    }
+                    maquinaExtraPendiente = maq;
+                    document.getElementById('input-extra').click();
+                });
+                tr.after(fila);
+            });
+            document.getElementById('input-extra').addEventListener('change', async ev => {
+                const input = ev.target;
+                const archivo = input.files && input.files[0];
+                input.value = '';
+                const maq = maquinaExtraPendiente;
+                maquinaExtraPendiente = null;
+                if (!archivo || !maq) return;
+                const imgId = `img-${maq}-x${Date.now().toString(36)}`;
+                const item = crearCasillaExtra(maq, imgId);
+                if (!item) return;
+                const ok = await procesarFoto(archivo, imgId);
+                if (ok) item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                else item.remove();
+            });
+        }
+
+        function crearCasillaExtra(maq, imgId) {
+            const fila = document.querySelector(`.fila-extras[data-maq="${maq}"]`);
+            if (!fila || document.getElementById(imgId)) return null;
+            const realId = imgId.replace('img-', '');
+            const item = document.createElement('div');
+            item.className = 'extra-item';
+            item.innerHTML =
+                `<div class="photo-box"><input type="file" accept="image/*" capture="environment">` +
+                `<span class="txt-foto" id="text-img-${realId}">Guardando...</span>` +
+                `<img id="${imgId}" style="display:none;"></div>` +
+                `<input type="text" class="obs-input" id="obs-${realId}" placeholder="Observación...">`;
+            item.querySelector('input[type=file]').addEventListener('change', ev => previewImage(ev, imgId));
+            const obs = item.querySelector('.obs-input');
+            obs.value = localStorage.getItem('haccp_obs-' + realId) || '';
+            obs.addEventListener('change', () => guardarObs(obs.id));
+            fila.querySelector('.extras-grid').appendChild(item);
+            agregarBotonBorrar(item.querySelector('.photo-box'), imgId);
+            return item;
         }
 
         /* ===================== AVISO DE TURNO ANTERIOR ===================== */
@@ -1045,6 +1142,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
         /* ===================== CAPTURA Y SELLO DE FOTOS ===================== */
         function datosDeCasilla(imgId) {
+            if (esExtra(imgId)) {
+                const fila = document.querySelector(`.fila-extras[data-maq="${maquinaDeExtra(imgId)}"]`);
+                return { maquina: fila ? fila.dataset.nombre : imgId, muestra: null };
+            }
             const img = document.getElementById(imgId);
             const fila = img && img.closest('tr');
             const maquina = fila?.querySelector('.machine-label')?.textContent.trim() || imgId;
@@ -1093,6 +1194,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
             const archivo = input.files && input.files[0];
             input.value = '';
             if (!archivo) return;
+            await procesarFoto(archivo, imgId);
+        }
+
+        // Comprime, sella, guarda y muestra. Devuelve true si quedó guardada.
+        async function procesarFoto(archivo, imgId) {
             const realId = imgId.replace('img-', '');
             const txtEl = document.getElementById('text-img-' + realId);
             if (txtEl) { txtEl.textContent = 'Guardando...'; txtEl.style.display = 'block'; }
@@ -1101,7 +1207,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                 const { maquina, muestra } = datosDeCasilla(imgId);
                 const analista = document.getElementById('analista-reporte').value.trim();
                 const sello = [
-                    `${maquina} - Muestra ${muestra}`,
+                    muestra ? `${maquina} - Muestra ${muestra}` : `${maquina} - Foto extra`,
                     ahora.toLocaleString('es', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
                 ];
                 if (analista) sello.push(analista);
@@ -1110,10 +1216,12 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                 fotosMeta[imgId] = ahora.getTime();
                 mostrarImagenSegura(imgId, dataUrl);                         // ...luego se muestra
                 actualizarProgreso();
+                return true;
             } catch (err) {
                 console.error(err);
                 alert('⚠️ La foto NO se pudo guardar en el teléfono. Vuelve a tomarla.\nDetalle: ' + err.message);
                 if (txtEl) txtEl.style.display = 'block';
+                return false;
             } finally {
                 if (txtEl) txtEl.textContent = '+ Foto';
             }
@@ -1145,7 +1253,13 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         function agregarBotonesBorrar() {
             idsFotos.forEach(id => {
                 const box = document.getElementById('img-' + id)?.closest('.photo-box');
-                if (!box || box.querySelector('.btn-borrar-foto')) return;
+                if (box) agregarBotonBorrar(box, 'img-' + id);
+            });
+        }
+
+        function agregarBotonBorrar(box, imgId) {
+            if (box.querySelector('.btn-borrar-foto')) return;
+            {
                 const btn = document.createElement('button');
                 btn.type = 'button';
                 btn.className = 'btn-borrar-foto';
@@ -1154,10 +1268,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                 btn.textContent = '✕';
                 btn.addEventListener('click', ev => {
                     ev.preventDefault(); ev.stopPropagation();
-                    borrarFoto('img-' + id);
+                    borrarFoto(imgId);
                 });
                 box.appendChild(btn);
-            });
+            }
         }
 
         async function borrarFoto(imgId) {
@@ -1165,7 +1279,13 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
             try {
                 await fotoBorrar(imgId);
                 localStorage.removeItem('haccp_' + imgId);
-                ocultarImagen(imgId);
+                if (esExtra(imgId)) {
+                    localStorage.removeItem('haccp_obs-' + imgId.replace('img-', ''));
+                    delete fotosMeta[imgId];
+                    document.getElementById(imgId)?.closest('.extra-item')?.remove();
+                } else {
+                    ocultarImagen(imgId);
+                }
                 actualizarProgreso();
             } catch (err) {
                 alert('No se pudo borrar la foto: ' + err.message);
@@ -1188,6 +1308,15 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                 const obsEl = document.getElementById('obs-' + id);
                 if(obsEl) obsEl.value = '';
             });
+            document.querySelectorAll('.extra-item').forEach(item => {
+                const imgId = item.querySelector('img').id;
+                localStorage.removeItem('haccp_obs-' + imgId.replace('img-', ''));
+                delete fotosMeta[imgId];
+                item.remove();
+            });
+            dbOp(ST_FOTOS, 'readonly', st => st.getAllKeys())
+                .then(claves => Promise.all(claves.filter(esExtra).map(fotoBorrar)))
+                .catch(e => console.error(e));
             actualizarProgreso();
         }
 
@@ -1203,12 +1332,13 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         }
 
         function actualizarProgreso() {
-            let total = 0, hechas = 0;
+            let total = 0, hechas = 0, extras = 0;
             seccionesReporte().forEach(sec => {
                 const filas = filasMaquina(sec);
                 let secTotal = 0, secHechas = 0;
                 filas.forEach(tr => { secTotal += 3; secHechas += fotosEnFila(tr); });
-                const seccionActiva = secHechas > 0;
+                const secExtras = sec.querySelectorAll('.extra-item .photo-box.con-foto').length;
+                const seccionActiva = secHechas + secExtras > 0;
                 filas.forEach(tr => {
                     const n = fotosEnFila(tr);
                     const lbl = tr.querySelector('td.machine-label');
@@ -1220,10 +1350,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                 const titulo = sec.querySelector('.nucleo-title');
                 let cont = titulo.querySelector('.contador-nucleo');
                 if (!cont) { cont = document.createElement('span'); cont.className = 'contador-nucleo'; titulo.appendChild(cont); }
-                cont.textContent = `(${secHechas}/${secTotal})`;
-                total += secTotal; hechas += secHechas;
+                cont.textContent = `(${secHechas}/${secTotal}${secExtras ? ' +' + secExtras : ''})`;
+                total += secTotal; hechas += secHechas; extras += secExtras;
             });
-            document.getElementById('progreso-texto').textContent = `📷 ${hechas}/${total} fotos`;
+            document.getElementById('progreso-texto').textContent = `📷 ${hechas}/${total} fotos` + (extras ? ` +${extras}` : '');
             document.getElementById('progreso-relleno').style.width = (total ? hechas / total * 100 : 0) + '%';
         }
 
@@ -1407,7 +1537,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                     img.style.objectFit = 'contain';
                 }
             });
-            hoja.querySelectorAll('.date-display, .txt-foto, input[type=file], .btn-borrar-foto, .contador-nucleo').forEach(el => el.remove());
+            hoja.querySelectorAll('.date-display, .txt-foto, input[type=file], .btn-borrar-foto, .contador-nucleo, .btn-agregar-extra').forEach(el => el.remove());
+            hoja.querySelectorAll('.fila-extras').forEach(tr => { if (!tr.querySelector('.extra-item')) tr.remove(); });
             hoja.querySelectorAll('.maq-completa, .maq-parcial, .maq-falta, .campo-error')
                 .forEach(el => el.classList.remove('maq-completa', 'maq-parcial', 'maq-falta', 'campo-error'));
             document.body.appendChild(hoja);
