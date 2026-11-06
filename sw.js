@@ -1,5 +1,5 @@
 // Service worker RCC: red primero (para recibir actualizaciones), caché si no hay señal.
-const CACHE = 'rcc-v1.22';
+const CACHE = 'rcc-v1.23';
 const ARCHIVOS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
