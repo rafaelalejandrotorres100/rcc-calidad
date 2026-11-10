@@ -880,7 +880,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
     <script>
         /* ===================== CONFIGURACIÓN ===================== */
-        const APP_VERSION = '1.24';
+        const APP_VERSION = '1.25';
         // Máximo de fotos extra por máquina (mantiene el PDF legible)
         const MAX_EXTRAS = 12;
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzBPkXjv1hfsAD4f5q7wy-eplIBW9tm1jSbn5KAfeds1Jflo8AVI7H0QyTh6lFejTGi/exec";
@@ -1005,9 +1005,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         const DB_NOMBRE = 'haccp_fotos_db', ST_FOTOS = 'fotos', ST_PEND = 'pendientes';
         let dbPromesa = null;
 
+        // Abre (o reutiliza) la conexión. Si Android/Chrome la cierra —p. ej. al abrir la
+        // cámara con poca memoria— se descarta y la próxima operación abre una nueva.
         function abrirDB() {
             if (dbPromesa) return dbPromesa;
-            dbPromesa = new Promise((resolve, reject) => {
+            const p = new Promise((resolve, reject) => {
                 if (!window.indexedDB) return reject(new Error('Este navegador no soporta IndexedDB'));
                 const req = indexedDB.open(DB_NOMBRE, 2);
                 req.onupgradeneeded = () => {
@@ -1015,20 +1017,51 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                     if (!db.objectStoreNames.contains(ST_FOTOS)) db.createObjectStore(ST_FOTOS);
                     if (!db.objectStoreNames.contains(ST_PEND)) db.createObjectStore(ST_PEND, { keyPath: 'id' });
                 };
-                req.onsuccess = () => resolve(req.result);
+                req.onsuccess = () => {
+                    const db = req.result;
+                    const descartar = () => { if (dbPromesa === p) dbPromesa = null; };
+                    db.onclose = descartar;                                   // cierre forzado por el sistema
+                    db.onversionchange = () => { descartar(); db.close(); }; // otra pestaña con versión nueva
+                    resolve(db);
+                };
                 req.onerror = () => reject(req.error);
+                req.onblocked = () => reject(new Error('Base de datos bloqueada por otra pestaña de RCC abierta. Ciérrala e intenta de nuevo.'));
             });
-            return dbPromesa;
+            dbPromesa = p;
+            p.catch(() => { if (dbPromesa === p) dbPromesa = null; }); // no quedar pegado a un error
+            return p;
         }
-        async function dbOp(store, modo, accion) {
-            const db = await abrirDB();
+
+        // Errores que indican conexión muerta: se reabre y se reintenta.
+        function esConexionCerrada(err) {
+            const n = err && err.name, m = String(err && err.message || '');
+            return n === 'InvalidStateError' || n === 'UnknownError' ||
+                   /closing|closed|connection/i.test(m);
+        }
+
+        function ejecutarTx(db, store, modo, accion) {
             return new Promise((resolve, reject) => {
-                const tx = db.transaction(store, modo);
+                const tx = db.transaction(store, modo); // lanza InvalidStateError si la conexión cerró
                 const req = accion(tx.objectStore(store));
                 tx.oncomplete = () => resolve(req ? req.result : undefined);
                 tx.onerror = () => reject(tx.error);
                 tx.onabort = () => reject(tx.error || new Error('Operación cancelada'));
             });
+        }
+
+        async function dbOp(store, modo, accion) {
+            for (let intento = 1; ; intento++) {
+                const db = await abrirDB();
+                try {
+                    return await ejecutarTx(db, store, modo, accion);
+                } catch (err) {
+                    if (intento >= 3 || !esConexionCerrada(err)) throw err;
+                    console.warn(`IndexedDB: conexión cerrada, reabriendo (intento ${intento})`, err);
+                    if (dbPromesa) { try { (await dbPromesa).close(); } catch (_) {} }
+                    dbPromesa = null;
+                    await new Promise(r => setTimeout(r, 150 * intento));
+                }
+            }
         }
         const fotoGuardar = (id, dato) => dbOp(ST_FOTOS, 'readwrite', st => st.put(dato, id));
         const fotoLeer    = id => dbOp(ST_FOTOS, 'readonly', st => st.get(id));
