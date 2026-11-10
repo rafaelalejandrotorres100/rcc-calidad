@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Generador de Reportes Calidad v1.23</title>
+    <title>Generador de Reportes Calidad v1.24</title>
     <meta name="theme-color" content="#003DA5">
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icon-192.png">
@@ -673,6 +673,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         .export-sheet .export-observation { min-height: 18px; padding: 4px 3px; font-size: 12px; font-weight: 600; color: #9d2633; white-space: pre-wrap; overflow-wrap: anywhere; }
         .export-sheet .machine-label { width: 15%; }
         .export-sheet .nucleo-section { margin: 0; break-inside: avoid; }
+        /* Modo imagen: fotos más grandes para que se lean el producto y el sello */
+        .export-sheet.modo-imagen .photo-box { height: 290px; }
     </style>
 </head>
 <body>
@@ -866,7 +868,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
         <!-- BOTONES VISIBLES DENTRO DEL CONTENEDOR PRINCIPAL -->
         <button class="btn btn-pdf" onclick="prepararYGenerar(true)">📄 Generar Reporte PDF (y enviar a nube)</button>
-        <button class="btn btn-img" onclick="prepararYGenerar(false)">🖼️ Descargar como Imagen Completa</button>
+        <button class="btn btn-img" onclick="prepararYGenerar(false)">🖼️ Descargar como Imágenes (1 por núcleo)</button>
         <button class="btn btn-clear" onclick="limpiarTurno()">🗑️ Borrar FOTOS y OP para el próximo turno</button>
 
     </div>
@@ -878,7 +880,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
     <script>
         /* ===================== CONFIGURACIÓN ===================== */
-        const APP_VERSION = '1.23';
+        const APP_VERSION = '1.24';
         // Máximo de fotos extra por máquina (mantiene el PDF legible)
         const MAX_EXTRAS = 12;
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzBPkXjv1hfsAD4f5q7wy-eplIBW9tm1jSbn5KAfeds1Jflo8AVI7H0QyTh6lFejTGi/exec";
@@ -1566,9 +1568,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                 ? valor.split('-').reverse().join('/') : (valor || '—');
         }
 
-        function crearHojaExportacion(seccion) {
+        function crearHojaExportacion(seccion, modoImagen = false) {
             const hoja = document.createElement('div');
-            hoja.className = 'export-sheet';
+            hoja.className = 'export-sheet' + (modoImagen ? ' modo-imagen' : '');
             const encabezado = document.getElementById('encabezado-impresion').cloneNode(true);
             encabezado.removeAttribute('id');
             encabezado.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
@@ -1618,14 +1620,36 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
             return hoja;
         }
 
-        async function capturarHoja(hoja) {
+        // html2canvas ignora object-fit y estira las fotos: se reemplaza cada foto por una
+        // versión ya ajustada al tamaño de su casilla (proporción real, sin cortar el sello).
+        async function ajustarFotosParaCaptura(hoja, escala) {
+            const imgs = [...hoja.querySelectorAll('.photo-box img')]
+                .filter(img => img.naturalWidth && img.clientWidth && img.clientHeight);
+            for (const img of imgs) {
+                const w = Math.round(img.clientWidth * escala), h = Math.round(img.clientHeight * escala);
+                const c = document.createElement('canvas');
+                c.width = w; c.height = h;
+                const ctx = c.getContext('2d');
+                ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
+                ctx.imageSmoothingQuality = 'high';
+                const r = Math.min(w / img.naturalWidth, h / img.naturalHeight);
+                const dw = img.naturalWidth * r, dh = img.naturalHeight * r;
+                ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+                img.src = c.toDataURL('image/jpeg', 0.92);
+                c.width = c.height = 0;
+                await img.decode().catch(() => {});
+            }
+        }
+
+        async function capturarHoja(hoja, escala = 1.5) {
             await Promise.all([...hoja.querySelectorAll('img')].map(img => {
                 if (!img.src || img.complete) return Promise.resolve();
                 return new Promise(resolve => { img.onload = resolve; img.onerror = resolve; });
             }));
             if (document.fonts?.ready) await document.fonts.ready;
+            await ajustarFotosParaCaptura(hoja, escala);
             return html2canvas(hoja, {
-                scale: 1.5, backgroundColor: '#ffffff', useCORS: true,
+                scale: escala, backgroundColor: '#ffffff', useCORS: true,
                 scrollX: 0, scrollY: 0, windowWidth: 1200,
                 width: hoja.offsetWidth, height: hoja.scrollHeight,
                 onclone: doc => {
@@ -1633,6 +1657,17 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                     if (el) { el.style.position = 'absolute'; el.style.left = '0'; el.style.top = '0'; }
                 }
             });
+        }
+
+        async function descargarArchivos(archivos) {
+            for (const f of archivos) {
+                const url = URL.createObjectURL(f);
+                const a = document.createElement('a');
+                a.href = url; a.download = f.name;
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 60000);
+                await new Promise(r => setTimeout(r, 500)); // los navegadores bloquean descargas seguidas
+            }
         }
 
         async function prepararYGenerar(esPDF) {
@@ -1661,13 +1696,23 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                     .replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 70);
                 const fileName = `${limpiarNombre(turnoSel)}_${limpiarNombre(analistaVal)}_${fechaRep}.pdf`;
 
+                if (!window.html2canvas) throw new Error('No se cargó html2canvas.');
                 const canvases = [];
-                for (const sec of secciones) {
-                    hoja = crearHojaExportacion(sec);
-                    canvases.push(await capturarHoja(hoja));
+                const imagenes = [];
+                for (const [i, sec] of secciones.entries()) {
+                    hoja = crearHojaExportacion(sec, !esPDF);
+                    if (esPDF) {
+                        canvases.push(await capturarHoja(hoja, 1.5));
+                    } else {
+                        // Una imagen por núcleo; cada canvas se libera apenas se convierte
+                        const canvas = await capturarHoja(hoja, 2);
+                        const blob = await new Promise((res, rej) => canvas.toBlob(
+                            b => b ? res(b) : rej(new Error('No se pudo crear la imagen.')), 'image/jpeg', 0.92));
+                        canvas.width = canvas.height = 0;
+                        imagenes.push(new File([blob], fileName.replace(/\.pdf$/, `_${i + 1}.jpg`), { type: 'image/jpeg' }));
+                    }
                     hoja.remove(); hoja = null;
                 }
-                if (!window.html2canvas) throw new Error('No se cargó html2canvas.');
 
                 if (esPDF) {
                     if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('No se pudo cargar jsPDF.');
@@ -1715,18 +1760,18 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
                         }
                     }
                 } else {
-                    const ancho = Math.max(...canvases.map(c => c.width));
-                    const alto = canvases.reduce((sum, c) => sum + c.height, 0);
-                    const resultado = document.createElement('canvas');
-                    resultado.width = ancho; resultado.height = alto;
-                    const ctx = resultado.getContext('2d');
-                    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, ancho, alto);
-                    let y = 0;
-                    canvases.forEach(c => { ctx.drawImage(c, (ancho-c.width)/2, y); y += c.height; });
-                    const link = document.createElement('a');
-                    link.download = fileName.replace(/\.pdf$/, '.jpg');
-                    link.href = resultado.toDataURL('image/jpeg', .9);
-                    link.click();
+                    // Menú compartir del teléfono (WhatsApp, Drive...) con todas las imágenes;
+                    // si no se puede, se descargan una por una.
+                    let compartido = false;
+                    if (navigator.canShare?.({ files: imagenes })) {
+                        try {
+                            await navigator.share({ files: imagenes, title: fileName.replace(/\.pdf$/, '') });
+                            compartido = true;
+                        } catch (e) {
+                            if (e.name === 'AbortError') compartido = true; // el usuario cerró el menú
+                        }
+                    }
+                    if (!compartido) await descargarArchivos(imagenes);
                 }
             } catch (err) {
                 console.error('Error al generar reporte:', err);
